@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-serialport = "4.7.0"
+serialport = "4.7.1"
 serde = { version = "1.0.219", features = ["derive"] }
-simple_windows = { path = "../simple_windows" }
+speedy2d = "2.1.0"
+image = "0.25.6"
