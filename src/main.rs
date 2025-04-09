@@ -1,4 +1,4 @@
-use std::{fs::File, io::{Cursor, Write}, time::{Duration, Instant}};
+use std::{io::{Cursor, Write}, time::Instant};
 
 use serialport::{SerialPort, SerialPortInfo};
 use speedy2d::{color::Color, dimen::{UVec2, Vec2}, font::{Font, TextLayout, TextOptions}, image::{ImageFileFormat, ImageHandle, ImageSmoothingMode}, shape::Rectangle, window::{MouseButton, WindowHelper}};
@@ -16,7 +16,20 @@ struct MyWindowHandler {
 	pub last_scan_time: Instant,
 	pub mouse_position: Vec2,
 	pub ff_byte: bool,
+	pub clock_divisor: u8,
+	pub resolution: u8,
+	pub interacting_with: Option<Setting>,
 }
+
+#[derive(PartialEq, Eq)]
+pub enum Setting {
+	SelectPort(Option<String>),
+	ClockDivisor,
+	Resolution,
+	SendSettings,
+}
+
+
 
 impl MyWindowHandler {
 	fn rescan_ports(&mut self) {
@@ -40,17 +53,38 @@ impl speedy2d::window::WindowHandler for MyWindowHandler {
 	
 	fn on_mouse_move(&mut self, _helper: &mut WindowHelper<()>, position: Vec2) {
 		self.mouse_position = position;
+		
+		if let Some(setting) = &self.interacting_with {
+			let slider_width = self.sidebar_width * 0.1;
+			match setting {
+				Setting::ClockDivisor => {
+					self.clock_divisor = (((position.x - slider_width * 0.5) / (self.sidebar_width - slider_width)).clamp(0.0, 1.0) * 63.0) as u8 + 1;
+				}
+				Setting::Resolution => {
+					self.resolution = (((position.x - slider_width * 0.5) / (self.sidebar_width - slider_width)).clamp(0.0, 1.0) * 7.0) as u8;
+				}
+				Setting::SendSettings => (),
+				Setting::SelectPort(_) => (),
+			}
+		}
+		
 	}
 	
-	fn on_mouse_button_down(&mut self, _helper: &mut WindowHelper<()>, button: MouseButton) {
+	fn on_mouse_button_down(&mut self, helper: &mut WindowHelper<()>, button: MouseButton) {
+		let size = helper.get_size_pixels();
+		// let width = size.x as f32;
+		let height = size.y as f32;
+		
 		match button {
 			MouseButton::Left => {
+				
 				if self.mouse_position.x >= 0.0 && self.mouse_position.x < self.sidebar_width {
-					let item_index = (self.mouse_position.y / self.sidebar_item_height) as usize;
-					match item_index {
+					let item_index_from_top = (self.mouse_position.y / self.sidebar_item_height) as usize;
+					match item_index_from_top {
 						0 => (),
 						1 => {
 							self.port = None;
+							self.interacting_with = Some(Setting::SelectPort(None));
 						}
 						n => if let Some(info) = self.available_ports.get(n - 2) {
 							
@@ -76,11 +110,53 @@ impl speedy2d::window::WindowHandler for MyWindowHandler {
 									println!("Could not open port {}: {e}", info.port_name);
 								}
 							}
+							
+							self.interacting_with = Some(Setting::SelectPort(Some(info.port_name.clone())));
 						}
 						
-						
 					}
+					
+					
+					let item_index_from_bottom = ((height - self.mouse_position.y) / self.sidebar_item_height) as usize;
+					match item_index_from_bottom {
+						2 => {
+							let slider_width = self.sidebar_width * 0.1;
+							let slider_position = (self.sidebar_width - slider_width) * self.resolution as f32 / 7.0;
+							
+							if !(self.mouse_position.x >= slider_position && self.mouse_position.x < slider_position + slider_width) {
+								self.clock_divisor = (((self.mouse_position.x - slider_width * 0.5) / (self.sidebar_width - slider_width)).clamp(0.0, 1.0) * 63.0).round() as u8 + 1;
+							}
+							self.interacting_with = Some(Setting::Resolution);
+						}
+						1 => {
+							let slider_width = self.sidebar_width * 0.1;
+							let slider_position = (self.sidebar_width - slider_width) * (self.clock_divisor - 1) as f32 / 63.0;
+							
+							if !(self.mouse_position.x >= slider_position && self.mouse_position.x < slider_position + slider_width) {
+								self.clock_divisor = (((self.mouse_position.x - slider_width * 0.5) / (self.sidebar_width - slider_width)).clamp(0.0, 1.0) * 7.0).round() as u8;
+							}
+							self.interacting_with = Some(Setting::ClockDivisor);
+						}
+						0 => {
+							if let Some(port) = self.port.as_mut() {
+								port.write(&[0b01_000000 | (self.clock_divisor - 1)]).unwrap();
+								// println!("Sent speed command");
+							}
+							self.interacting_with = Some(Setting::SendSettings);
+						}
+						_ => ()
+					}
+					
 				}
+			}
+			_ => ()
+		}
+	}
+	
+	fn on_mouse_button_up(&mut self, _helper: &mut WindowHelper<()>, button: MouseButton) {
+		match button {
+			MouseButton::Left => {
+				self.interacting_with = None;
 			}
 			_ => ()
 		}
@@ -104,6 +180,7 @@ impl speedy2d::window::WindowHandler for MyWindowHandler {
 						Err(e) => println!("Serial bytes_to_read error: {e}"),
 						Ok(0) => (),
 						Ok(n) => {
+							// dbg!(String::from_utf8_lossy(&buf[0..n]));
 							
 							for byte in &buf[0..n] {
 								if self.ff_byte {
@@ -124,6 +201,7 @@ impl speedy2d::window::WindowHandler for MyWindowHandler {
 												}
 											}
 											
+											// println!("{:?}", self.jpeg_buffer.len());
 											self.jpeg_buffer.clear();
 										}
 										_ => ()
@@ -136,7 +214,8 @@ impl speedy2d::window::WindowHandler for MyWindowHandler {
 								
 								self.ff_byte = *byte == 0xff;
 							}
-							// println!("{:?}", &self.jpeg_buffer[previous_end..]);
+							
+							
 						}
 					}
 				}
@@ -167,7 +246,13 @@ impl speedy2d::window::WindowHandler for MyWindowHandler {
 		y += self.sidebar_item_height;
 		
 		if self.port.is_none() {
-			graphics.draw_rectangle(Rectangle::from_tuples((0.0, y), (self.sidebar_width, y + self.sidebar_item_height)), Color::from_rgb(0.2, 0.3, 0.5));
+			graphics.draw_rectangle(Rectangle::from_tuples((0.0, y), (self.sidebar_width, y + self.sidebar_item_height)), 
+				if self.interacting_with == Some(Setting::SelectPort(None)) {
+					Color::from_rgb(0.4, 0.5, 0.8)
+				} else {
+					Color::from_rgb(0.3, 0.4, 0.6)
+				}
+			);
 		}
 		graphics.draw_text((left_gap, y + text_lower), Color::from_gray(0.9), &self.font.layout_text("None", font_size, TextOptions::new()));
 		y += self.sidebar_item_height;
@@ -176,13 +261,76 @@ impl speedy2d::window::WindowHandler for MyWindowHandler {
 			if let Some(port) = self.port.as_ref() {
 				if let Some(name) = port.name() {
 					if info.port_name == name {
-						graphics.draw_rectangle(Rectangle::from_tuples((0.0, y), (self.sidebar_width, y + self.sidebar_item_height)), Color::from_rgb(0.2, 0.3, 0.5));
+						graphics.draw_rectangle(Rectangle::from_tuples((0.0, y), (self.sidebar_width, y + self.sidebar_item_height)), 
+						if self.interacting_with == Some(Setting::SelectPort(Some(name))) {
+							Color::from_rgb(0.4, 0.5, 0.8)
+						} else {
+							Color::from_rgb(0.3, 0.4, 0.6)
+						}
+					);
 					}
 				}
 			}
 			graphics.draw_text((left_gap, y + text_lower), Color::from_gray(0.9), &self.font.layout_text(&info.port_name, font_size, TextOptions::new()));
 		}
 		
+		y = height - 3.0 * self.sidebar_item_height;
+		
+		
+		let slider_width = self.sidebar_width * 0.1;
+		
+		graphics.draw_rectangle(Rectangle::from_tuples((0.0, y), (self.sidebar_width, y + self.sidebar_item_height)), Color::from_gray(0.5));
+		
+		let slider_position = (self.sidebar_width - slider_width) * self.resolution as f32 / 7.0;
+		graphics.draw_rectangle(Rectangle::from_tuples((slider_position, y), (slider_position + slider_width, y + self.sidebar_item_height)), 
+			if let Some(Setting::Resolution) = self.interacting_with {
+				Color::from_rgb(0.4, 0.5, 0.8)
+			} else {
+				Color::from_rgb(0.3, 0.4, 0.6)
+			}
+		);
+		
+		let text = self.font.layout_text(&match self.resolution {
+			0 => "160x120",
+			1 => "320x240",
+			2 => "352x288",
+			3 => "640x480",
+			4 => "800x600",
+			5 => "1024x768",
+			6 => "1280x1024",
+			7 => "1600x1200",
+			_ => "Invalid"
+		}, font_size, TextOptions::new());
+		graphics.draw_text(((self.sidebar_width - text.width()) * 0.5, y + text_lower), Color::from_gray(0.9), &text);
+		y += self.sidebar_item_height;
+		
+		
+		graphics.draw_rectangle(Rectangle::from_tuples((0.0, y), (self.sidebar_width, y + self.sidebar_item_height)), Color::from_gray(0.5));
+		
+		let slider_position = (self.sidebar_width - slider_width) * (self.clock_divisor - 1) as f32 / 63.0;
+		graphics.draw_rectangle(Rectangle::from_tuples((slider_position, y), (slider_position + slider_width, y + self.sidebar_item_height)), 
+			if let Some(Setting::ClockDivisor) = self.interacting_with {
+				Color::from_rgb(0.4, 0.5, 0.8)
+			} else {
+				Color::from_rgb(0.3, 0.4, 0.6)
+			}
+		);
+		
+		let text = self.font.layout_text(&format!("Divisor: {}", self.clock_divisor), font_size, TextOptions::new());
+		graphics.draw_text(((self.sidebar_width - text.width()) * 0.5, y + text_lower), Color::from_gray(0.9), &text);
+		y += self.sidebar_item_height;
+		
+		
+		graphics.draw_rectangle(Rectangle::from_tuples((0.0, y), (self.sidebar_width, y + self.sidebar_item_height)), 
+			if let Some(Setting::SendSettings) = self.interacting_with {
+				Color::from_rgb(0.4, 0.5, 0.6)
+			} else {
+				Color::from_gray(0.4)
+			}
+		);
+		let text = self.font.layout_text("Send Settings", font_size, TextOptions::new());
+		graphics.draw_text(((self.sidebar_width - text.width()) * 0.5, y + text_lower), Color::from_gray(0.9), &text);
+		// y += self.sidebar_item_height;
 		
 		
 		
@@ -222,6 +370,9 @@ fn main() {
 		last_scan_time: Instant::now(),
 		mouse_position: Vec2::new(0.0, 0.0),
 		ff_byte: false,
+		clock_divisor: 64,
+		resolution: 0,
+		interacting_with: None,
 	};
 	
 	window.run_loop(window_handler);
