@@ -4,6 +4,18 @@ use serialport::{SerialPort, SerialPortInfo};
 use speedy2d::{color::Color, dimen::{UVec2, Vec2}, font::{Font, TextLayout, TextOptions}, image::{ImageFileFormat, ImageHandle, ImageSmoothingMode}, shape::Rectangle, window::{MouseButton, WindowHelper}};
 
 
+pub fn hexprint(buf: &[u8]) {
+	for byte in buf {
+		if *byte >= 33 && *byte <= 126 {
+			print!("{} ", *byte as char);
+		} else {
+			print!("{byte:02x} ");
+		}
+	}
+	println!();
+}
+
+
 
 struct MyWindowHandler {
 	pub available_ports: Vec<SerialPortInfo>,
@@ -180,7 +192,8 @@ impl speedy2d::window::WindowHandler for MyWindowHandler {
 						Err(e) => println!("Serial bytes_to_read error: {e}"),
 						Ok(0) => (),
 						Ok(n) => {
-							// dbg!(String::from_utf8_lossy(&buf[0..n]));
+							// println!("\nfirst data after :");
+							// hexprint(&buf[0..n]);
 							
 							for byte in &buf[0..n] {
 								if self.ff_byte {
@@ -188,29 +201,36 @@ impl speedy2d::window::WindowHandler for MyWindowHandler {
 										0xd8 => {
 											self.jpeg_buffer.clear();
 											self.jpeg_buffer.push(0xff);
-											
 										}
 										0xd9 => {
-											self.jpeg_buffer.push(0xd9);
-											let cursor = Cursor::new(self.jpeg_buffer.clone());
-											
-											match graphics.create_image_from_file_bytes(Some(ImageFileFormat::JPEG), ImageSmoothingMode::Linear, cursor) {
-												Ok(image) => self.image = Some(image),
-												Err(_e) => {
-													// println!("Jpeg decoding error");
+											if !self.jpeg_buffer.is_empty() {
+												self.jpeg_buffer.push(0xd9);
+												let cursor = Cursor::new(self.jpeg_buffer.clone());
+												
+												match graphics.create_image_from_file_bytes(Some(ImageFileFormat::JPEG), ImageSmoothingMode::Linear, cursor) {
+													Ok(image) => self.image = Some(image),
+													Err(_e) => {
+														println!("Jpeg decoding error");
+														
+														// println!("\n\nJpeg decoding error\n");
+														// hexprint(&self.jpeg_buffer);
+													}
 												}
+												
+												// println!("{:?}", self.jpeg_buffer.len());
+												self.jpeg_buffer.clear();
+												
+											} else {
+												println!("\n\n\nMissed start of jpeg data!\n\n\n");
 											}
-											
-											// println!("{:?}", self.jpeg_buffer.len());
-											self.jpeg_buffer.clear();
 										}
 										_ => ()
 									}
 								}
 								
-								if !self.jpeg_buffer.is_empty() {
+								// if !self.jpeg_buffer.is_empty() {
 									self.jpeg_buffer.push(*byte);
-								}
+								// }
 								
 								self.ff_byte = *byte == 0xff;
 							}
